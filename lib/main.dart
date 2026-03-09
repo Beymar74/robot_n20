@@ -1,6 +1,11 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+
+// UUID del ESP32 (NUS - Nordic UART Service)
+const String SERVICE_UUID  = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const String CHAR_TX_UUID  = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // ESP32 → App
+const String CHAR_RX_UUID  = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // App → ESP32
 
 void main() {
   runApp(const RobotApp());
@@ -8,7 +13,6 @@ void main() {
 
 class RobotApp extends StatelessWidget {
   const RobotApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -26,38 +30,29 @@ class RobotApp extends StatelessWidget {
   }
 }
 
-// ============================================================
-//  PÁGINA PRINCIPAL - Conexión Bluetooth
-// ============================================================
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
-
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
-  List<BluetoothDevice> dispositivos = [];
+  List<ScanResult> resultados = [];
   bool buscando = false;
 
   @override
   void initState() {
     super.initState();
-    buscarDispositivos();
+    escanear();
   }
 
-  Future<void> buscarDispositivos() async {
-    setState(() => buscando = true);
-    try {
-      List<BluetoothDevice> lista =
-          await FlutterBluetoothSerial.instance.getBondedDevices();
-      setState(() {
-        dispositivos = lista;
-        buscando = false;
-      });
-    } catch (e) {
-      setState(() => buscando = false);
-    }
+  Future<void> escanear() async {
+    setState(() { buscando = true; resultados = []; });
+    FlutterBluePlus.scanResults.listen((results) {
+      setState(() => resultados = results);
+    });
+    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
+    setState(() => buscando = false);
   }
 
   @override
@@ -66,69 +61,67 @@ class _HomePageState extends State<HomePage> {
       backgroundColor: const Color(0xFF1A1A2E),
       appBar: AppBar(
         backgroundColor: const Color(0xFF3B5BA5),
-        title: const Text('Robot N20 - Bluetooth',
+        title: const Text('Robot N20 - BLE',
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.white),
-            onPressed: buscarDispositivos,
+            onPressed: buscando ? null : escanear,
           )
         ],
       ),
       body: Column(
         children: [
-          // Header
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(20),
             color: const Color(0xFF16213E),
-            child: Column(
-              children: [
-                const Icon(Icons.bluetooth, color: Color(0xFF4FC3F7), size: 48),
-                const SizedBox(height: 8),
-                const Text('Selecciona tu ESP32',
-                    style: TextStyle(color: Colors.white, fontSize: 18,
-                        fontWeight: FontWeight.bold)),
-                const Text('Busca "Robot_N20" en la lista',
-                    style: TextStyle(color: Colors.white54, fontSize: 13)),
-              ],
-            ),
+            child: Column(children: [
+              Icon(buscando ? Icons.bluetooth_searching : Icons.bluetooth,
+                  color: const Color(0xFF4FC3F7), size: 48),
+              const SizedBox(height: 8),
+              Text(buscando ? 'Buscando dispositivos...' : 'Selecciona tu ESP32',
+                  style: const TextStyle(color: Colors.white, fontSize: 18,
+                      fontWeight: FontWeight.bold)),
+              const Text('Busca "Robot_N20" en la lista',
+                  style: TextStyle(color: Colors.white54, fontSize: 13)),
+            ]),
           ),
-          // Lista de dispositivos
           Expanded(
-            child: buscando
+            child: buscando && resultados.isEmpty
                 ? const Center(child: CircularProgressIndicator())
-                : dispositivos.isEmpty
+                : resultados.isEmpty
                     ? const Center(
-                        child: Text('No hay dispositivos emparejados.\nEmpareja el ESP32 primero en Ajustes > Bluetooth',
+                        child: Text('No se encontraron dispositivos.\nAsegúrate que el ESP32 está encendido.',
                             textAlign: TextAlign.center,
                             style: TextStyle(color: Colors.white54)))
                     : ListView.builder(
                         padding: const EdgeInsets.all(12),
-                        itemCount: dispositivos.length,
+                        itemCount: resultados.length,
                         itemBuilder: (context, i) {
-                          final d = dispositivos[i];
+                          final r = resultados[i];
+                          final nombre = r.device.platformName.isNotEmpty
+                              ? r.device.platformName : 'Desconocido';
+                          final esRobot = nombre == 'Robot_N20';
                           return Card(
-                            color: const Color(0xFF16213E),
+                            color: esRobot ? const Color(0xFF1B3A6B) : const Color(0xFF16213E),
                             margin: const EdgeInsets.only(bottom: 8),
                             child: ListTile(
-                              leading: const Icon(Icons.bluetooth,
-                                  color: Color(0xFF4FC3F7)),
-                              title: Text(d.name ?? 'Desconocido',
-                                  style: const TextStyle(
-                                      color: Colors.white,
+                              leading: Icon(Icons.bluetooth,
+                                  color: esRobot ? Colors.greenAccent : const Color(0xFF4FC3F7)),
+                              title: Text(nombre,
+                                  style: TextStyle(
+                                      color: esRobot ? Colors.greenAccent : Colors.white,
                                       fontWeight: FontWeight.bold)),
-                              subtitle: Text(d.address,
+                              subtitle: Text(r.device.remoteId.str,
                                   style: const TextStyle(color: Colors.white54)),
-                              trailing: const Icon(Icons.arrow_forward_ios,
-                                  color: Colors.white38, size: 16),
+                              trailing: Text('${r.rssi} dBm',
+                                  style: const TextStyle(color: Colors.white38)),
                               onTap: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => ControlPage(device: d),
-                                  ),
-                                );
+                                FlutterBluePlus.stopScan();
+                                Navigator.push(context, MaterialPageRoute(
+                                  builder: (_) => ControlPage(device: r.device),
+                                ));
                               },
                             ),
                           );
@@ -141,94 +134,80 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-// ============================================================
-//  PÁGINA DE CONTROL
-// ============================================================
 class ControlPage extends StatefulWidget {
   final BluetoothDevice device;
   const ControlPage({super.key, required this.device});
-
   @override
   State<ControlPage> createState() => _ControlPageState();
 }
 
 class _ControlPageState extends State<ControlPage> {
-  BluetoothConnection? conexion;
   bool conectado = false;
   bool conectando = false;
-  String ultimoLog = 'Desconectado';
+  String ultimoLog = 'Conectando...';
+  BluetoothCharacteristic? rxChar;
+  BluetoothCharacteristic? txChar;
 
-  final TextEditingController _distanciaCtrl = TextEditingController();
-  final TextEditingController _gradosCtrl = TextEditingController();
-  final TextEditingController _velCtrl = TextEditingController(text: '150');
+  final _distanciaCtrl = TextEditingController();
+  final _gradosCtrl    = TextEditingController();
+  final _velCtrl       = TextEditingController(text: '150');
 
   @override
-  void initState() {
-    super.initState();
-    conectar();
-  }
+  void initState() { super.initState(); conectar(); }
 
   Future<void> conectar() async {
     setState(() => conectando = true);
     try {
-      BluetoothConnection conn =
-          await BluetoothConnection.toAddress(widget.device.address);
-      setState(() {
-        conexion = conn;
-        conectado = true;
-        conectando = false;
-        ultimoLog = 'Conectado a ${widget.device.name}';
-      });
-      // Escuchar respuestas del ESP32
-      conn.input!.listen((data) {
-        String msg = utf8.decode(data).trim();
-        if (msg.isNotEmpty) {
-          setState(() => ultimoLog = msg);
+      await widget.device.connect(timeout: const Duration(seconds: 10));
+      List<BluetoothService> services = await widget.device.discoverServices();
+      for (var s in services) {
+        if (s.uuid.toString().toLowerCase() == SERVICE_UUID) {
+          for (var c in s.characteristics) {
+            String uuid = c.uuid.toString().toLowerCase();
+            if (uuid == CHAR_RX_UUID) rxChar = c;
+            if (uuid == CHAR_TX_UUID) txChar = c;
+          }
         }
-      });
+      }
+      if (txChar != null) {
+        await txChar!.setNotifyValue(true);
+        txChar!.onValueReceived.listen((data) {
+          String msg = utf8.decode(data).trim();
+          if (msg.isNotEmpty) setState(() => ultimoLog = msg);
+        });
+      }
+      setState(() { conectado = true; conectando = false;
+        ultimoLog = 'Conectado a ${widget.device.platformName}'; });
     } catch (e) {
-      setState(() {
-        conectando = false;
-        ultimoLog = 'Error al conectar: $e';
-      });
+      setState(() { conectando = false; ultimoLog = 'Error: $e'; });
     }
   }
 
   void enviar(String cmd) {
-    if (conexion != null && conectado) {
-      conexion!.output.add(utf8.encode('$cmd\n'));
+    if (rxChar != null && conectado) {
+      rxChar!.write(utf8.encode('$cmd\n'), withoutResponse: true);
       setState(() => ultimoLog = 'Enviado: $cmd');
     }
   }
 
   @override
-  void dispose() {
-    conexion?.dispose();
-    super.dispose();
-  }
+  void dispose() { widget.device.disconnect(); super.dispose(); }
 
-  // ---- WIDGETS ----
-
-  Widget _botonAccion(String label, IconData icon, Color color, VoidCallback? onTap) {
+  Widget _boton(String label, IconData icon, Color color, VoidCallback? onTap) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
         decoration: BoxDecoration(
           color: onTap != null ? color : Colors.grey.shade800,
           borderRadius: BorderRadius.circular(12),
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: Colors.white, size: 28),
-            const SizedBox(height: 4),
-            Text(label,
-                style: const TextStyle(
-                    color: Colors.white, fontSize: 12,
-                    fontWeight: FontWeight.bold)),
-          ],
-        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, color: Colors.white, size: 28),
+          const SizedBox(height: 4),
+          Text(label, style: const TextStyle(color: Colors.white, fontSize: 12,
+              fontWeight: FontWeight.bold)),
+        ]),
       ),
     );
   }
@@ -236,28 +215,51 @@ class _ControlPageState extends State<ControlPage> {
   Widget _seccion(String titulo, Widget contenido) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF16213E),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            child: Text(titulo,
-                style: const TextStyle(
-                    color: Color(0xFF4FC3F7),
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13)),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-            child: contenido,
-          ),
-        ],
-      ),
+      decoration: BoxDecoration(color: const Color(0xFF16213E),
+          borderRadius: BorderRadius.circular(14)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Padding(padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Text(titulo, style: const TextStyle(color: Color(0xFF4FC3F7),
+                fontWeight: FontWeight.bold, fontSize: 13))),
+        Padding(padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+            child: contenido),
+      ]),
     );
+  }
+
+  Widget _campoEnviar(TextEditingController ctrl, String hint,
+      IconData icon, String sufijo, Color btnColor, String btnLabel, String prefijo) {
+    return Row(children: [
+      Expanded(
+        child: TextField(
+          controller: ctrl,
+          keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: hint, hintStyle: const TextStyle(color: Colors.white38),
+            filled: true, fillColor: const Color(0xFF0D1117),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide.none),
+            prefixIcon: Icon(icon, color: const Color(0xFF4FC3F7)),
+            suffixText: sufijo, suffixStyle: const TextStyle(color: Colors.white54),
+          ),
+        ),
+      ),
+      const SizedBox(width: 10),
+      ElevatedButton(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: btnColor,
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+        onPressed: conectado ? () {
+          final val = ctrl.text.trim();
+          if (val.isNotEmpty) enviar('$prefijo$val');
+        } : null,
+        child: Text(btnLabel, style: const TextStyle(color: Colors.white,
+            fontWeight: FontWeight.bold)),
+      ),
+    ]);
   }
 
   @override
@@ -266,260 +268,81 @@ class _ControlPageState extends State<ControlPage> {
       backgroundColor: const Color(0xFF1A1A2E),
       appBar: AppBar(
         backgroundColor: const Color(0xFF3B5BA5),
-        title: Text(widget.device.name ?? 'Robot',
+        title: Text(widget.device.platformName.isNotEmpty
+            ? widget.device.platformName : 'Robot',
             style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: Icon(
-              conectado ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-              color: conectado ? Colors.greenAccent : Colors.redAccent,
-            ),
-          )
-        ],
+        actions: [Padding(padding: const EdgeInsets.only(right: 12),
+            child: Icon(conectado ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+                color: conectado ? Colors.greenAccent : Colors.redAccent))],
       ),
       body: conectando
-          ? const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Conectando...', style: TextStyle(color: Colors.white)),
-                ],
-              ),
-            )
+          ? const Center(child: Column(mainAxisAlignment: MainAxisAlignment.center,
+              children: [CircularProgressIndicator(), SizedBox(height: 16),
+                Text('Conectando al robot...', style: TextStyle(color: Colors.white))]))
           : SingleChildScrollView(
               padding: const EdgeInsets.all(14),
-              child: Column(
-                children: [
-                  // Log
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0D1117),
+              child: Column(children: [
+                // Log
+                Container(
+                  width: double.infinity, padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(color: const Color(0xFF0D1117),
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: const Color(0xFF3B5BA5)),
-                    ),
-                    child: Text('📟  $ultimoLog',
-                        style: const TextStyle(
-                            color: Colors.greenAccent, fontSize: 13,
-                            fontFamily: 'monospace')),
-                  ),
-                  const SizedBox(height: 12),
+                      border: Border.all(color: const Color(0xFF3B5BA5))),
+                  child: Text('📟  $ultimoLog', style: const TextStyle(
+                      color: Colors.greenAccent, fontSize: 13, fontFamily: 'monospace')),
+                ),
+                const SizedBox(height: 12),
 
-                  // Controles rápidos
-                  _seccion('Control Rápido',
-                    Column(
-                      children: [
-                        // Adelante
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            _botonAccion('Adelante', Icons.arrow_upward,
-                                const Color(0xFF2ECC71),
-                                conectado ? () => enviar('A') : null),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        // Izquierda / Stop / Derecha
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            _botonAccion('Izq', Icons.rotate_left,
-                                const Color(0xFF3B5BA5),
-                                conectado ? () => enviar('G-90') : null),
-                            const SizedBox(width: 10),
-                            _botonAccion('STOP', Icons.stop,
-                                const Color(0xFFE74C3C),
-                                conectado ? () => enviar('S') : null),
-                            const SizedBox(width: 10),
-                            _botonAccion('Der', Icons.rotate_right,
-                                const Color(0xFF3B5BA5),
-                                conectado ? () => enviar('G90') : null),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        // Atrás
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            _botonAccion('Atrás', Icons.arrow_downward,
-                                const Color(0xFFE67E22),
-                                conectado ? () => enviar('R') : null),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
+                // Direccional
+                _seccion('Control Rápido', Column(children: [
+                  Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    _boton('Adelante', Icons.arrow_upward, const Color(0xFF2ECC71),
+                        conectado ? () => enviar('A') : null),
+                  ]),
+                  const SizedBox(height: 8),
+                  Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    _boton('Izq', Icons.rotate_left, const Color(0xFF3B5BA5),
+                        conectado ? () => enviar('G-90') : null),
+                    const SizedBox(width: 10),
+                    _boton('STOP', Icons.stop, const Color(0xFFE74C3C),
+                        conectado ? () => enviar('S') : null),
+                    const SizedBox(width: 10),
+                    _boton('Der', Icons.rotate_right, const Color(0xFF3B5BA5),
+                        conectado ? () => enviar('G90') : null),
+                  ]),
+                  const SizedBox(height: 8),
+                  Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    _boton('Atrás', Icons.arrow_downward, const Color(0xFFE67E22),
+                        conectado ? () => enviar('R') : null),
+                  ]),
+                ])),
 
-                  // Distancia específica
-                  _seccion('Avanzar Distancia (cm)',
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _distanciaCtrl,
-                            keyboardType: const TextInputType.numberWithOptions(
-                                signed: true, decimal: true),
-                            style: const TextStyle(color: Colors.white),
-                            decoration: InputDecoration(
-                              hintText: 'Ej: 20 o -15',
-                              hintStyle: const TextStyle(color: Colors.white38),
-                              filled: true,
-                              fillColor: const Color(0xFF0D1117),
-                              border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide: BorderSide.none),
-                              prefixIcon: const Icon(Icons.straighten,
-                                  color: Color(0xFF4FC3F7)),
-                              suffixText: 'cm',
-                              suffixStyle: const TextStyle(color: Colors.white54),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF2ECC71),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 20, vertical: 16),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10)),
-                          ),
-                          onPressed: conectado
-                              ? () {
-                                  final val = _distanciaCtrl.text.trim();
-                                  if (val.isNotEmpty) enviar('D$val');
-                                }
-                              : null,
-                          child: const Text('IR',
-                              style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold)),
-                        ),
-                      ],
-                    ),
-                  ),
+                _seccion('Avanzar Distancia',
+                  _campoEnviar(_distanciaCtrl, 'Ej: 20 o -15',
+                      Icons.straighten, 'cm', const Color(0xFF2ECC71), 'IR', 'D')),
 
-                  // Giro específico
-                  _seccion('Girar Grados (°)',
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _gradosCtrl,
-                            keyboardType: const TextInputType.numberWithOptions(
-                                signed: true, decimal: true),
-                            style: const TextStyle(color: Colors.white),
-                            decoration: InputDecoration(
-                              hintText: 'Ej: 90 o -45',
-                              hintStyle: const TextStyle(color: Colors.white38),
-                              filled: true,
-                              fillColor: const Color(0xFF0D1117),
-                              border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide: BorderSide.none),
-                              prefixIcon: const Icon(Icons.rotate_right,
-                                  color: Color(0xFF4FC3F7)),
-                              suffixText: '°',
-                              suffixStyle: const TextStyle(color: Colors.white54),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF3B5BA5),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 20, vertical: 16),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10)),
-                          ),
-                          onPressed: conectado
-                              ? () {
-                                  final val = _gradosCtrl.text.trim();
-                                  if (val.isNotEmpty) enviar('G$val');
-                                }
-                              : null,
-                          child: const Text('GIRAR',
-                              style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold)),
-                        ),
-                      ],
-                    ),
-                  ),
+                _seccion('Girar Grados',
+                  _campoEnviar(_gradosCtrl, 'Ej: 90 o -45',
+                      Icons.rotate_right, '°', const Color(0xFF3B5BA5), 'GIRAR', 'G')),
 
-                  // Velocidad
-                  _seccion('Velocidad PWM (0-255)',
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _velCtrl,
-                            keyboardType: TextInputType.number,
-                            style: const TextStyle(color: Colors.white),
-                            decoration: InputDecoration(
-                              hintText: '0 - 255',
-                              hintStyle: const TextStyle(color: Colors.white38),
-                              filled: true,
-                              fillColor: const Color(0xFF0D1117),
-                              border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide: BorderSide.none),
-                              prefixIcon: const Icon(Icons.speed,
-                                  color: Color(0xFF4FC3F7)),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFFE67E22),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 20, vertical: 16),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10)),
-                          ),
-                          onPressed: conectado
-                              ? () {
-                                  final val = _velCtrl.text.trim();
-                                  if (val.isNotEmpty) enviar('VEL:$val');
-                                }
-                              : null,
-                          child: const Text('SET',
-                              style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold)),
-                        ),
-                      ],
-                    ),
-                  ),
+                _seccion('Velocidad PWM (0-255)',
+                  _campoEnviar(_velCtrl, '0 - 255',
+                      Icons.speed, '', const Color(0xFFE67E22), 'SET', 'VEL:')),
 
-                  // Giros rápidos
-                  _seccion('Giros Rápidos',
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        _botonAccion('45°', Icons.rotate_right,
-                            const Color(0xFF6B85C4),
-                            conectado ? () => enviar('G45') : null),
-                        _botonAccion('90°', Icons.rotate_right,
-                            const Color(0xFF3B5BA5),
-                            conectado ? () => enviar('G90') : null),
-                        _botonAccion('180°', Icons.rotate_right,
-                            const Color(0xFF2C3E8C),
-                            conectado ? () => enviar('G180') : null),
-                        _botonAccion('-90°', Icons.rotate_left,
-                            const Color(0xFF3B5BA5),
-                            conectado ? () => enviar('G-90') : null),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+                _seccion('Giros Rápidos', Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _boton('45°',  Icons.rotate_right, const Color(0xFF6B85C4),
+                        conectado ? () => enviar('G45')  : null),
+                    _boton('90°',  Icons.rotate_right, const Color(0xFF3B5BA5),
+                        conectado ? () => enviar('G90')  : null),
+                    _boton('180°', Icons.rotate_right, const Color(0xFF2C3E8C),
+                        conectado ? () => enviar('G180') : null),
+                    _boton('-90°', Icons.rotate_left,  const Color(0xFF3B5BA5),
+                        conectado ? () => enviar('G-90') : null),
+                  ],
+                )),
+              ]),
             ),
     );
   }
